@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>场景生成</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #canvas { display: block; width: 100%; height: 600px; border: 2px solid black; }
+        .controls { position: static; background: white; padding: 10px; border-radius: 5px; }
+        .loading { display: none; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+    <div class="controls">
+        <h2>基于图像生成</h2>
+        <h3>创建项目</h3>
+        <div>
+            项目名称: <input type="text" id="project-name" />
+            <button onclick="createProject()">创建</button>
+        </div>
+        <h3>上传图像</h3>
+        <div>
+            选择图像: <input type="file" id="image-upload" multiple accept="image/*" />
+            <button onclick="uploadImages()">上传</button>
+        </div>
+        <h3>重建场景</h3>
+        <button onclick="reconstruct()">开始重建</button>
+        <div>
+            置信度阈值: <input type="range" id="conf-threshold" min="0" max="100" value="50" /> <span id="conf-value">50%</span>
+        </div>
+        <div>
+            显示帧:
+            <select id="frame-selector">
+                <!-- 动态生成选项 -->
+            </select>
+        </div>
+        <button onclick="resetView()">重置视图</button>
+        <button onclick="closeRender()">关闭</button>
+        <button id="exportBtn" onclick="exportToColmap()">导出为COLMAP文件</button> <!-- 新增导出按钮 -->
+        <p>点云数量: <span id="pointcloud-count">0</span></p>
+    </div>
+    <canvas id="canvas"></canvas>
+    <div class="loading" id="loading">加载中...</div>
+
+    <script>
+        let scene, camera, renderer, controls;
+        let pointCloud = null; // 初始化为 null，以便跟踪渲染状态
+
+        function initScene() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / 600, 0.1, 1000);
+            const canvas = document.getElementById('canvas');
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(window.innerWidth, 600);
+            renderer.setClearColor(0xffffff);
+            document.body.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            camera.position.set(0, 0, 1);
+            controls.update();
+
+            animate();
+            loadFrames(); // 加载帧选项
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (pointCloud) controls.update(); // 仅在有点云时更新控件
+            renderer.render(scene, camera);
+        }
+
+        async function createProject() {
+            const projectName = document.getElementById('project-name').value;
+            if (!projectName) {
+                alert('请输入项目名称');
+                return;
+            }
+            const response = await fetch('/project', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project_name: projectName })
+            });
+            const result = await response.json();
+            alert(result.message || result.error);
+            if (result.message) loadFrames(); // 重新加载帧选项
+        }
+
+        async function uploadImages() {
+            const files = document.getElementById('image-upload').files;
+            if (files.length === 0) {
+                alert('请选择图像');
+                return;
+            }
+            const formData = new FormData();
+            for (let file of files) {
+                formData.append('images', file);
+            }
+            const response = await fetch('/upload', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await response.json();
+            alert(result.message || result.error);
+            if (result.message) loadFrames(); // 重新加载帧选项
+        }
+
+        async function reconstruct() {
+            document.getElementById('loading').style.display = 'block';
+            const response = await fetch('/reconstruct', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const result = await response.json();
+            if (result.error) {
+                alert(result.error);
+                document.getElementById('loading').style.display = 'none';
+                return;
+            }
+            loadPointCloud();
+            loadFrames(); // 重建后更新帧选项
+        }
+
+        async function loadPointCloud() {
+            try {
+                const response = await fetch('/api/pointcloud');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                console.log("Received colors:", data.colors.slice(0, 10));
+                document.getElementById('pointcloud-count').innerText = data.point_count || 0;
+
+                if (pointCloud) scene.remove(pointCloud); // 移除旧的点云
+
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.points.flat(), 3));
+                const colorArray = new Uint8Array(data.colors.flat());
+                geometry.setAttribute('color', new THREE.Uint8BufferAttribute(colorArray, 3, true));
+                console.log("Geometry colors:", Array.from(geometry.getAttribute('color').array.slice(0, 30)));
+                const material = new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true });
+                pointCloud = new THREE.Points(geometry, material);
+                scene.add(pointCloud);
+
+                const center = data.scene_center || [0, 0, 0];
+                camera.position.set(center[0], center[1], center[2] + 1);
+                controls.target.set(center[0], center[1], center[2]);
+                controls.update();
+
+                document.getElementById('loading').style.display = 'none';
+            } catch (error) {
+                console.error('Failed to load pointcloud:', error.message, error.stack);
+                document.getElementById('pointcloud-count').innerText = '加载失败';
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        async function filterPointCloud() {
+            const confPercent = document.getElementById('conf-threshold').value;
+            const frame = document.getElementById('frame-selector').value;
+            try {
+                const response = await fetch('/api/filter-points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ conf_percent: parseFloat(confPercent), frame: frame })
+                });
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                console.log("Filtered colors:", data.colors.slice(0, 10));
+                document.getElementById('pointcloud-count').innerText = data.point_count;
+
+                if (pointCloud) scene.remove(pointCloud); // 移除旧的点云
+
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.points.flat(), 3));
+                const colorArray = new Uint8Array(data.colors.flat());
+                geometry.setAttribute('color', new THREE.Uint8BufferAttribute(colorArray, 3, true));
+                console.log("Geometry colors:", Array.from(geometry.getAttribute('color').array.slice(0, 30)));
+                const material = new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true });
+                pointCloud = new THREE.Points(geometry, material);
+                scene.add(pointCloud);
+            } catch (error) {
+                console.error('Failed to filter pointcloud:', error.message, error.stack);
+                document.getElementById('pointcloud-count').innerText = '加载失败';
+            }
+        }
+
+        function resetView() {
+            const center = [0, 0, 0];
+            camera.position.set(center[0], center[1], center[2] + 1);
+            controls.target.set(center[0], center[1], center[2]);
+            controls.update();
+        }
+
+        async function loadFrames() {
+            try {
+                const response = await fetch('/api/frames');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                const frameSelector = document.getElementById('frame-selector');
+                frameSelector.innerHTML = '<option value="all">所有帧</option>';
+                data.frames.forEach(frame => {
+                    const option = document.createElement('option');
+                    option.value = frame;
+                    option.textContent = `Frame ${frame}`;
+                    frameSelector.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load frames:', error.message);
+            }
+        }
+
+        async function closeRender() {
+            if (pointCloud) {
+                scene.remove(pointCloud);
+                pointCloud.geometry.dispose();
+                pointCloud.material.dispose();
+                pointCloud = null;
+                document.getElementById('pointcloud-count').innerText = '0';
+                renderer.render(scene, camera);
+                console.log('Front-end point cloud rendering closed.');
+            }
+            // 调用后端关闭 VGGT
+            try {
+                const response = await fetch('/shutdown_vggt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const result = await response.json();
+                alert(result.message || result.error);
+                console.log('Back-end VGGT shutdown:', result.message);
+            } catch (error) {
+                console.error('Failed to shutdown VGGT:', error.message);
+                alert('后端关闭 VGGT 失败');
+            }
+        }
+
+        async function exportToColmap() {
+            document.getElementById('loading').style.display = 'block';
+            try {
+                const response = await fetch('/export', {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const result = await response.json();
+                if (result.message) {
+                    alert(result.message);
+                } else if (result.error) {
+                    alert(result.error);
+                }
+            } catch (error) {
+                console.error('Failed to export to COLMAP:', error.message);
+                alert('导出到 COLMAP 失败');
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        document.getElementById('conf-threshold').addEventListener('input', () => {
+            document.getElementById('conf-value').innerText = document.getElementById('conf-threshold').value + '%';
+            filterPointCloud();
+        });
+        document.getElementById('frame-selector').addEventListener('change', filterPointCloud);
+
+        initScene();
+    </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9632dee88c075397',t:'MTc1MzE4NjYwMi4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
