@@ -1,18 +1,18 @@
 conda create -n XXX python=3.10
 conda activate XXX
-cd XXX
-git clone https://github.com/facebookresearch/vggt.git
-cd vggt
+
+cd segmentProject/models/vggt
 pip install -r requirements.txt
 pip install -r requirements_demo.txt
 pip install -e .
-cd XXX
-git clone https://github.com/facebookresearch/segment-anything.git
-cd segment-anything
+
+cd segmentProject/models/segment-anything
 pip install opencv-python pycocotools matplotlib onnxruntime onnx
 pip install -e .
 
-download:
+pip install Flask==3.0.1
+
+model download:
 skyseg.onnx:https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx
 path:/segmentProject/skyseg.onnx
 sam_vit_h_4b8939.pth:https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
