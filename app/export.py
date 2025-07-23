@@ -1,7 +1,11 @@
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, send_file
 import os
 import logging
 import threading
+import zipfile
+import io
+import shutil
+import tempfile
 
 # 配置日志
 logging.basicConfig(level=logging.DEBUG)
@@ -32,13 +36,40 @@ def export():
         if 'error' in result:
             logger.error(f"Export error: {result['error']}")
             return jsonify(result), 500
-        logger.debug(f"Export successful to {output_dir}")
-        return jsonify({'message': f'导出成功至 {output_dir}', 'output_path': output_dir})
+
+        # 创建包含 images 和 sparse 文件夹的 zip 文件
+        temp_dir = tempfile.mkdtemp()
+        zip_path = os.path.join(temp_dir, f"{project_name}_export.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # 添加 images 文件夹
+            for root, _, files in os.walk(image_folder):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, os.path.join('datasets', project_name))
+                    zipf.write(file_path, os.path.join(project_name, arcname))
+            # 添加 sparse 文件夹
+            for root, _, files in os.walk(output_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, os.path.join('datasets', project_name))
+                    zipf.write(file_path, os.path.join(project_name, arcname))
+
+        logger.debug(f"Zip file created at {zip_path}")
+        return send_file(
+            zip_path,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f"{project_name}_export.zip"
+        )
     except Exception as e:
         logger.error(f"Export failed: {str(e)}", exc_info=True)
         return jsonify({'error': f'导出失败: {str(e)}'}), 500
     finally:
-        # 确保在任何情况下都清理资源，模仿 reconstruct.py 的 shutdown_vggt 逻辑
-        from utils.reconstruct_images import cleanup_vggt  # 动态导入以避免循环引用
+        # 清理 VGGT 资源
+        from utils.reconstruct_images import cleanup_vggt
         cleanup_vggt()
         logger.debug("VGGT resources cleaned up after export")
+        # 清理临时文件
+        if 'temp_dir' in locals():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            logger.debug("Temporary files cleaned up")
