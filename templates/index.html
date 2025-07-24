@@ -23,7 +23,16 @@
         <h3>上传图像</h3>
         <div>
             选择图像: <input type="file" id="image-upload" multiple accept="image/*" />
-            <button onclick="uploadImages()">上传</button>
+            <button onclick="uploadImages()">上传图像</button>
+        </div>
+        <h3>上传视频</h3>
+        <div>
+            选择视频: <input type="file" id="video-upload" multiple accept="video/*" />
+            <button onclick="uploadVideo()">上传视频</button>
+            <div>
+                抽取帧数: <input type="number" id="frame" min="1" value="10" />
+                <button onclick="frameExtraction()">抽帧</button>
+            </div>
         </div>
         <h3>重建场景</h3>
         <button onclick="reconstruct()">开始重建</button>
@@ -57,8 +66,17 @@
             renderer.setClearColor(0xffffff);
             document.body.appendChild(renderer.domElement);
 
+            // 初始化 OrbitControls 并调整参数
             controls = new THREE.OrbitControls(camera, renderer.domElement);
-            camera.position.set(0, 0, 1);
+            controls.minPolarAngle = 0; // 最小极角
+            controls.maxPolarAngle = Math.PI; // 最大极角，允许完全上下查看
+            controls.minDistance = 1; // 最小距离
+            controls.maxDistance = 1000; // 最大距离
+            controls.enablePan = true; // 启用平移
+            controls.enableDamping = true; // 启用阻尼效果
+            controls.dampingFactor = 0.05; // 阻尼系数
+            camera.position.set(0, 0, 5); // 初始位置稍远，Z 轴向上
+            controls.target.set(0, 0, 0); // 目标在原点
             controls.update();
 
             animate();
@@ -67,7 +85,7 @@
 
         function animate() {
             requestAnimationFrame(animate);
-            if (pointCloud) controls.update();
+            if (controls) controls.update();
             renderer.render(scene, camera);
         }
 
@@ -116,6 +134,59 @@
             }
         }
 
+        async function uploadVideo() {
+            const files = document.getElementById('video-upload').files;
+            if (files.length === 0) {
+                alert('请选择视频');
+                return;
+            }
+            const formData = new FormData();
+            for (let file of files) {
+                formData.append('videos', file);
+            }
+            try {
+                const response = await fetch('/uploadVideo', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                alert(result.message || result.error);
+                if (result.message) loadFrames();
+            } catch (error) {
+                console.error('Failed to upload video:', error.message);
+                alert('错误: 上传视频失败');
+            }
+        }
+
+        async function frameExtraction() {
+            const projectName = document.getElementById('project-name').value;
+            const frameCount = document.getElementById('frame').value;
+            if (!projectName) {
+                alert('请输入项目名称');
+                return;
+            }
+            if (!frameCount || frameCount <= 0) {
+                alert('请输入有效的帧数');
+                return;
+            }
+            document.getElementById('loading').style.display = 'block';
+            try {
+                const response = await fetch('/frameExtraction', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_name: projectName, frame: frameCount })
+                });
+                const result = await response.json();
+                alert(result.message || result.error);
+                if (result.message) loadFrames();
+            } catch (error) {
+                console.error('Failed to extract frames:', error.message);
+                alert('错误: 抽帧失败');
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
         async function reconstruct() {
             document.getElementById('loading').style.display = 'block';
             try {
@@ -156,7 +227,13 @@
                 if (pointCloud) scene.remove(pointCloud);
 
                 const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.points.flat(), 3));
+                const positions = new Float32Array(data.points.flat());
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+                // 修正倒立：沿 X 轴旋转 180 度
+                const matrix = new THREE.Matrix4().makeRotationX(Math.PI); // 沿 X 轴旋转 180 度
+                geometry.applyMatrix4(matrix);
+
                 const colorArray = new Uint8Array(data.colors.flat());
                 geometry.setAttribute('color', new THREE.Uint8BufferAttribute(colorArray, 3, true));
                 console.log("Geometry colors:", Array.from(geometry.getAttribute('color').array.slice(0, 30)));
@@ -164,8 +241,10 @@
                 pointCloud = new THREE.Points(geometry, material);
                 scene.add(pointCloud);
 
+                // 动态调整相机位置，假设 Z 轴向上
                 const center = data.scene_center || [0, 0, 0];
-                camera.position.set(center[0], center[1], center[2] + 1);
+                const radius = Math.max(...data.points.map(p => Math.hypot(...p))) || 5;
+                camera.position.set(center[0], center[1], center[2] + radius * 2); // 相机沿 Z 轴正方向
                 controls.target.set(center[0], center[1], center[2]);
                 controls.update();
             } catch (error) {
@@ -194,13 +273,26 @@
                 if (pointCloud) scene.remove(pointCloud);
 
                 const geometry = new THREE.BufferGeometry();
-                geometry.setAttribute('position', new THREE.Float32BufferAttribute(data.points.flat(), 3));
+                const positions = new Float32Array(data.points.flat());
+                geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+                // 修正倒立：沿 X 轴旋转 180 度
+                const matrix = new THREE.Matrix4().makeRotationX(Math.PI); // 沿 X 轴旋转 180 度
+                geometry.applyMatrix4(matrix);
+
                 const colorArray = new Uint8Array(data.colors.flat());
                 geometry.setAttribute('color', new THREE.Uint8BufferAttribute(colorArray, 3, true));
                 console.log("Geometry colors:", Array.from(geometry.getAttribute('color').array.slice(0, 30)));
                 const material = new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true });
                 pointCloud = new THREE.Points(geometry, material);
                 scene.add(pointCloud);
+
+                // 动态调整相机位置
+                const center = data.scene_center || [0, 0, 0];
+                const radius = Math.max(...data.points.map(p => Math.hypot(...p))) || 5;
+                camera.position.set(center[0], center[1], center[2] + radius * 2);
+                controls.target.set(center[0], center[1], center[2]);
+                controls.update();
             } catch (error) {
                 console.error('Failed to filter pointcloud:', error.message, error.stack);
                 document.getElementById('pointcloud-count').innerText = '加载失败';
@@ -208,10 +300,13 @@
         }
 
         function resetView() {
-            const center = [0, 0, 0];
-            camera.position.set(center[0], center[1], center[2] + 1);
-            controls.target.set(center[0], center[1], center[2]);
-            controls.update();
+            if (pointCloud) {
+                const center = [0, 0, 0];
+                const radius = Math.max(...pointCloud.geometry.attributes.position.array.map((v, i) => i % 3 === 2 ? Math.hypot(...pointCloud.geometry.attributes.position.array.slice(i - 2, i + 1)) : 0)) || 5;
+                camera.position.set(center[0], center[1], center[2] + radius * 2);
+                controls.target.set(center[0], center[1], center[2]);
+                controls.update();
+            }
         }
 
         async function loadFrames() {

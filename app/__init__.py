@@ -11,8 +11,9 @@ def create_app():
     from . import uploadFile
     from . import reconstruct
     from . import export
+    from . import data_process
     app.register_blueprint(uploadFile.bp)
     app.register_blueprint(reconstruct.bp_reconstruct)
     app.register_blueprint(export.bp_export)
-
+    app.register_blueprint(data_process.bp_data_process)
     return app
